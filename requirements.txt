@@ -1,0 +1,7 @@
+numpy==1.26.4
+mne
+scipy
+matplotlib
+scikit-learn
+tensorflow
+seaborn
