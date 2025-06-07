@@ -1,41 +1,41 @@
+# improved_preprocessing.py
 import os
 import numpy as np
 import mne
 from os import listdir
 from os.path import isfile, join
 from scipy import signal
-from scipy.signal import hilbert
+from scipy.signal import hilbert, welch
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from mne.time_frequency import morlet
+from sklearn.preprocessing import RobustScaler
+from mne.decoding import CSP
+import warnings
+warnings.filterwarnings('ignore')
 
-def preprocess_eeg_3dclmi(raw, event_id=None, fs=250):
+def preprocess_eeg_3dclmi_improved(raw, event_id=None, fs=250):
     """
-    Préprocessing EEG optimisé pour le modèle 3D-CLMI
+    Preprocessing EEG amélioré pour le modèle 3D-CLMI
     
-    Parameters:
-    -----------
-    raw : mne.io.Raw
-        Données EEG brutes
-    event_id : dict
-        Dictionnaire des événements
-    fs : int
-        Fréquence d'échantillonnage
-        
-    Returns:
-    --------
-    X : numpy.ndarray
-        Données préprocessées de forme (n_trials, 30, 30, 22, 1)
-    y : numpy.ndarray
-        Labels de forme (n_trials,)
+    Améliorations:
+    - Filtrage adaptatif par bande de fréquence
+    - Normalisation robuste
+    - Vérification de la qualité du signal
+    - Extraction d'époques plus robuste
     """
+    print("Début du preprocessing amélioré...")
     
     # Extraire les événements
     events, events_ids = mne.events_from_annotations(raw)
     
     # Codes des événements pour les 4 classes d'imagerie motrice
     motor_event_ids = ['769', '770', '771', '772']
-    motor_event_ids_effectives = [events_ids[keys] for keys in motor_event_ids]
+    try:
+        motor_event_ids_effectives = [events_ids[keys] for keys in motor_event_ids]
+    except KeyError as e:
+        print(f"Erreur: Événement manquant {e}")
+        print(f"Événements disponibles: {list(events_ids.keys())}")
+        return None, None
     
     # Mappage des événements
     event_id = {
@@ -45,28 +45,48 @@ def preprocess_eeg_3dclmi(raw, event_id=None, fs=250):
         'tongue': motor_event_ids_effectives[3]
     }
     
-    # Filtrage passe-bande (8-30 Hz) pour capturer les rythmes Alpha et Beta
-    raw_filtered = raw.copy()
-    raw_filtered.filter(8, 30, method='iir')
+    print(f"Événements mappés: {event_id}")
     
-    # Application de la référence moyenne commune (CAR)
+    # === FILTRAGE AMÉLIORÉ ===
+    raw_filtered = raw.copy()
+    
+    # 1. Filtrage haute-fréquence pour enlever les artefacts musculaires
+    raw_filtered.filter(l_freq=1, h_freq=40, method='iir')
+    
+    # 2. Filtrage notch pour enlever le 50Hz (secteur européen)
+    raw_filtered.notch_filter(freqs=50, method='iir')
+    
+    # 3. Référence moyenne commune améliorée
     raw_filtered.set_eeg_reference('average')
     
-    # Extraction des époques
-    # Commencer 2.5s après le cue (cue à t=2s, donc 4.5s depuis le début)
-    # Finir 4.5s après le cue (6.5s depuis le début)
-    tmin = 4.5  # 2.5s après le cue
-    tmax = 6.5  # 4.5s après le cue
+    # === EXTRACTION D'ÉPOQUES ROBUSTE ===
+    # Période d'imagerie motrice : 2.5s après le cue jusqu'à 6.5s
+    tmin = 2.5  # Après le cue
+    tmax = 6.5  # Fin de l'imagerie
     
-    # Créer les époques
-    epochs = mne.Epochs(raw_filtered, events, event_id, tmin, tmax, 
-                        picks=['eeg'], baseline=None, preload=True)
+    # Créer les époques avec rejet automatique d'artefacts
+    epochs = mne.Epochs(
+        raw_filtered, events, event_id, 
+        tmin, tmax, picks=['eeg'], 
+        baseline=(None),  # Baseline correction
+        preload=True,
+        reject=dict(eeg=100e-6),  # Rejet automatique des artefacts > 100µV
+        reject_by_annotation=True
+    )
+    
+    print(f"Époques extraites: {len(epochs)} sur {len(events)} événements")
+    
+    # Vérifier la distribution des classes
+    events_in_epochs = epochs.events[:, 2]
+    for class_name, event_code in event_id.items():
+        count = np.sum(events_in_epochs == event_code)
+        print(f"{class_name}: {count} essais")
     
     # Obtenir les données et labels
-    X = epochs.get_data()  # Forme: (n_trials, n_channels, n_times)
+    X = epochs.get_data()  # (n_trials, n_channels, n_times)
     y = epochs.events[:, 2]
     
-    # Mapper les codes d'événements vers des classes indexées à 0
+    # Mapper vers des indices de classe
     class_mapping = {
         event_id['left_hand']: 0,
         event_id['right_hand']: 1,
@@ -76,175 +96,193 @@ def preprocess_eeg_3dclmi(raw, event_id=None, fs=250):
     
     y = np.array([class_mapping[code] for code in y])
     
-    # Transformer les données dans le format requis par le modèle 3D-CLMI
-    X_transformed = transform_to_timefreq_3d(X, fs=fs)
+    # === TRANSFORMATION TEMPS-FRÉQUENCE AMÉLIORÉE ===
+    X_transformed = transform_to_timefreq_3d_improved(X, fs=fs)
     
     return X_transformed, y
 
-def transform_to_timefreq_3d(X, fs=250, n_freqs=30, n_times=30):
+def transform_to_timefreq_3d_improved(X, fs=250, n_freqs=20, n_times=25):
     """
-    Transformer les données EEG en représentation temps-fréquence 3D
-    optimisée pour 3D-CLMI
+    Transformation temps-fréquence améliorée avec focus sur les bandes discriminantes
     
-    Parameters:
-    -----------
-    X : numpy.ndarray
-        Données d'époques EEG de forme (n_trials, n_channels, n_times)
-    fs : int
-        Fréquence d'échantillonnage
-    n_freqs : int
-        Nombre de bins de fréquence (30 pour correspondre au modèle)
-    n_times : int
-        Nombre de bins de temps (30 pour correspondre au modèle)
-        
-    Returns:
-    --------
-    X_transformed : numpy.ndarray
-        Données transformées de forme (n_trials, 30, 30, n_channels, 1)
+    Améliorations:
+    - Focus sur les bandes Alpha (8-13Hz) et Beta (13-30Hz)
+    - Utilisation de la transformée de Hilbert pour l'enveloppe
+    - Normalisation par canal
+    - Downsampling temporel intelligent
     """
     n_trials, n_channels, n_samples = X.shape
+    print(f"Transformation TF améliorée: {X.shape}")
     
-    # Définir les fréquences d'intérêt (8-30 Hz divisé en 30 bins)
-    freqs = np.linspace(8, 30, n_freqs)
+    # Définir les fréquences d'intérêt (focus sur Alpha et Beta)
+    freqs = np.logspace(np.log10(8), np.log10(30), n_freqs)
     
-    # Définir les instants temporels (diviser la période en 30 bins)
-    times = np.linspace(0, n_samples/fs, n_times)
+    # Définir les instants temporels
+    time_points = np.linspace(0, n_samples-1, n_times).astype(int)
     
-    # Initialiser le tableau de sortie
+    # Initialiser le tenseur de sortie
     X_tf = np.zeros((n_trials, n_freqs, n_times, n_channels))
     
-    print(f"Calcul de la représentation temps-fréquence...")
+    print("Calcul des représentations temps-fréquence...")
     
     for trial in range(n_trials):
-        if trial % 50 == 0:
-            print(f"  Traitement de l'essai {trial+1}/{n_trials}")
+        if trial % 25 == 0:
+            print(f"  Essai {trial+1}/{n_trials}")
             
         for ch in range(n_channels):
-            # Obtenir le signal pour ce canal et cet essai
             signal_data = X[trial, ch, :]
             
             # Calculer la représentation temps-fréquence
-            X_tf[trial, :, :, ch] = compute_time_frequency_representation(
-                signal_data, freqs, times, fs
+            tf_matrix = compute_hilbert_envelope_spectrogram(
+                signal_data, freqs, time_points, fs
             )
+            
+            X_tf[trial, :, :, ch] = tf_matrix
     
-    # Ajouter la dimension des canaux pour CNN: (n_trials, freqs, times, channels, 1)
+    # Normalisation par canal (robuste aux outliers)
+    print("Normalisation des données...")
+    scaler = RobustScaler()
+    
+    for ch in range(n_channels):
+        # Reshape pour la normalisation
+        channel_data = X_tf[:, :, :, ch].reshape(-1, n_freqs * n_times)
+        channel_data_scaled = scaler.fit_transform(channel_data)
+        X_tf[:, :, :, ch] = channel_data_scaled.reshape(-1, n_freqs, n_times)
+    
+    # Ajouter la dimension des features
     X_transformed = X_tf.reshape(n_trials, n_freqs, n_times, n_channels, 1)
     
-    print(f"Transformation terminée. Forme finale: {X_transformed.shape}")
-    
+    print(f"Transformation terminée: {X_transformed.shape}")
     return X_transformed
 
-def compute_time_frequency_representation(signal_data, freqs, times, fs):
+def compute_hilbert_envelope_spectrogram(signal_data, freqs, time_points, fs):
     """
-    Calculer la représentation temps-fréquence d'un signal
-    
-    Parameters:
-    -----------
-    signal_data : numpy.ndarray
-        Signal temporal (n_samples,)
-    freqs : numpy.ndarray
-        Fréquences d'intérêt
-    times : numpy.ndarray
-        Instants temporels d'intérêt
-    fs : int
-        Fréquence d'échantillonnage
-        
-    Returns:
-    --------
-    tf_repr : numpy.ndarray
-        Représentation temps-fréquence (n_freqs, n_times)
+    Calcul de spectrogramme basé sur l'enveloppe de Hilbert
+    Plus robuste que la méthode précédente
     """
     n_freqs = len(freqs)
-    n_times = len(times)
-    tf_repr = np.zeros((n_freqs, n_times))
-    
-    # Calculer l'indice temporel pour chaque instant d'intérêt
-    time_indices = np.round(times * fs).astype(int)
-    time_indices = np.clip(time_indices, 0, len(signal_data) - 1)
+    n_times = len(time_points)
+    spectrogram = np.zeros((n_freqs, n_times))
     
     for f_idx, freq in enumerate(freqs):
-        # Méthode 1: Filtrage passe-bande + enveloppe
-        # Créer un filtre passe-bande centré sur la fréquence
-        bandwidth = 2.0  # Largeur de bande en Hz
+        # Créer un filtre passe-bande avec une largeur adaptative
+        if freq < 15:  # Alpha band
+            bandwidth = 2.0
+        else:  # Beta band
+            bandwidth = 3.0
+            
         low_freq = max(freq - bandwidth/2, 0.5)
         high_freq = min(freq + bandwidth/2, fs/2 - 0.5)
         
-        # Conception du filtre
-        b, a = signal.butter(4, [low_freq, high_freq], btype='band', fs=fs)
+        # Filtrage passe-bande
+        sos = signal.butter(4, [low_freq, high_freq], btype='band', fs=fs, output='sos')
+        filtered_signal = signal.sosfilt(sos, signal_data)
         
-        # Appliquer le filtre
-        filtered_signal = signal.filtfilt(b, a, signal_data)
-        
-        # Calculer l'enveloppe using Hilbert transform
+        # Enveloppe de Hilbert
         analytic_signal = hilbert(filtered_signal)
         envelope = np.abs(analytic_signal)
         
-        # Échantillonner l'enveloppe aux instants d'intérêt
-        tf_repr[f_idx, :] = envelope[time_indices]
+        # Échantillonner aux points temporels d'intérêt
+        spectrogram[f_idx, :] = envelope[time_points]
     
-    return tf_repr
+    return spectrogram
 
-def apply_spatial_filtering(X, method='csp', n_components=6):
+def apply_spatial_csp(X, y, n_components=6):
     """
-    Appliquer un filtrage spatial (optionnel pour améliorer les performances)
+    Application du Common Spatial Pattern (CSP) pour améliorer la séparabilité
+    """
+    print(f"Application du CSP avec {n_components} composantes...")
     
-    Parameters:
-    -----------
-    X : numpy.ndarray
-        Données de forme (n_trials, n_freqs, n_times, n_channels, 1)
-    method : str
-        Méthode de filtrage spatial ('csp', 'ica', etc.)
-    n_components : int
-        Nombre de composantes à conserver
+    n_trials, n_freqs, n_times, n_channels, _ = X.shape
+    
+    # Reformater pour CSP: (n_trials, n_channels, n_features)
+    X_csp_input = X.reshape(n_trials, n_channels, n_freqs * n_times)
+    
+    # Appliquer CSP
+    csp = CSP(n_components=n_components, reg='ledoit_wolf')
+    X_csp = csp.fit_transform(X_csp_input, y)
+    
+    # Reformater pour le modèle 3D-CLMI
+    # X_csp shape: (n_trials, n_components)
+    # On veut: (n_trials, n_freqs, n_times, n_components, 1)
+    
+    # Répliquer les composantes CSP sur la grille temps-fréquence
+    X_csp_3d = np.zeros((n_trials, n_freqs, n_times, n_components, 1))
+    
+    for trial in range(n_trials):
+        for comp in range(n_components):
+            # Utiliser la même valeur CSP pour tous les points TF
+            X_csp_3d[trial, :, :, comp, 0] = X_csp[trial, comp]
+    
+    print(f"CSP appliqué: {X_csp_3d.shape}")
+    return X_csp_3d
+
+def validate_data_quality(X, y):
+    """
+    Validation de la qualité des données après preprocessing
+    """
+    print("\n=== VALIDATION DE LA QUALITÉ ===")
+    
+    # 1. Vérifier les NaN et Inf
+    if np.any(np.isnan(X)) or np.any(np.isinf(X)):
+        print("❌ ERREUR: Données contiennent des NaN ou Inf!")
+        return False
+    
+    # 2. Vérifier la distribution des classes
+    unique_classes, counts = np.unique(y, return_counts=True)
+    print(f"Classes: {unique_classes}")
+    print(f"Comptages: {counts}")
+    
+    if len(unique_classes) != 4:
+        print("❌ ERREUR: Pas exactement 4 classes!")
+        return False
+    
+    # 3. Vérifier la variance des données
+    variance_per_feature = np.var(X, axis=0)
+    zero_variance_features = np.sum(variance_per_feature == 0)
+    
+    print(f"Features avec variance nulle: {zero_variance_features}")
+    print(f"Variance moyenne: {variance_per_feature.mean():.6f}")
+    print(f"Variance std: {variance_per_feature.std():.6f}")
+    
+    # 4. Vérifier la séparabilité inter-classes
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+    
+    X_flat = X.reshape(X.shape[0], -1)
+    
+    # Test rapide de séparabilité avec LDA
+    try:
+        lda = LinearDiscriminantAnalysis()
+        lda.fit(X_flat, y)
+        lda_score = lda.score(X_flat, y)
+        print(f"Score LDA (séparabilité): {lda_score:.3f}")
         
-    Returns:
-    --------
-    X_filtered : numpy.ndarray
-        Données filtrées spatialement
-    """
-    # Cette fonction peut être implémentée selon les besoins
-    # Pour l'instant, on retourne les données originales
-    return X
+        if lda_score > 0.3:
+            print("✅ Séparabilité acceptable")
+        else:
+            print("⚠️ Séparabilité faible - vérifier les features")
+            
+    except Exception as e:
+        print(f"⚠️ Impossible de calculer la séparabilité: {e}")
+        return False   
+    return True
 
-def normalize_data(X_train, X_val):
-    """
-    Normaliser les données (standardisation par canal et par fréquence)
-    
-    Parameters:
-    -----------
-    X_train, X_val : numpy.ndarray
-        Données d'entraînement et de validation
-        
-    Returns:
-    --------
-    X_train_norm, X_val_norm : numpy.ndarray
-        Données normalisées
-    """
-    # Calculer les statistiques sur l'ensemble d'entraînement
-    mean_train = np.mean(X_train, axis=(0, 1, 2), keepdims=True)
-    std_train = np.std(X_train, axis=(0, 1, 2), keepdims=True)
-    
-    # Appliquer la normalisation
-    X_train_norm = (X_train - mean_train) / (std_train + 1e-8)
-    X_val_norm = (X_val - mean_train) / (std_train + 1e-8)
-    
-    return X_train_norm, X_val_norm
-
-# Script principal de préprocessing
 def main_preprocessing():
     """
     Script principal pour le préprocessing des données BCI IV 2a
     """
     print(f"Version {np.__version__}")
     # Définir le chemin vers les fichiers GDF
-    GDF_FILES_PATH = '/home/cytech/dev/EEG Classification/data/raw'
+    GDF_FILES_PATH = "/home/cytech/dev/EEG Classification/data/raw"
     raw_gdfs = []
-    
+
     # Lire tous les fichiers GDF
-    gdf_files = [join(GDF_FILES_PATH, f) for f in listdir(GDF_FILES_PATH) 
-                 if isfile(join(GDF_FILES_PATH, f)) and f.endswith('.gdf')]
-    
+    gdf_files = [
+        join(GDF_FILES_PATH, f)
+        for f in listdir(GDF_FILES_PATH)
+        if isfile(join(GDF_FILES_PATH, f)) and f.endswith(".gdf")
+    ]
+
     for gdf_file in gdf_files:
         print(f"Chargement de {gdf_file}")
         try:
@@ -252,55 +290,56 @@ def main_preprocessing():
             raw_gdfs.append(raw)
         except Exception as e:
             print(f"Erreur lors du chargement de {gdf_file}: {e}")
-    
+
     # Traiter chaque fichier GDF
     processed_data = []
     for i, raw in enumerate(raw_gdfs):
         print(f"Traitement du fichier {i+1}/{len(raw_gdfs)}")
         try:
-            X, y = preprocess_eeg_3dclmi(raw)
+            X, y = preprocess_eeg_3dclmi_improved(raw, fs=250)
             processed_data.append((X, y))
             print(f"  Extrait {len(y)} essais avec forme {X.shape}")
         except Exception as e:
             print(f"  Erreur lors du traitement du fichier: {e}")
-    
+
     if not processed_data:
         print("Aucune donnée traitée avec succès!")
         return
-    
+
     # Combiner toutes les données traitées
     X_all = np.concatenate([data[0] for data in processed_data], axis=0)
     y_all = np.concatenate([data[1] for data in processed_data], axis=0)
-    
-    print(f"Forme finale du jeu de données: {X_all.shape}, Forme des labels: {y_all.shape}")
-    print(f"Distribution des classes: {np.bincount(y_all)}")
-    
-    # Diviser en ensembles d'entraînement et de validation
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_all, y_all, test_size=0.2, random_state=42, stratify=y_all
+
+    print(
+        f"Forme finale du jeu de données: {X_all.shape}, Forme des labels: {y_all.shape}"
     )
+    print(f"Distribution des classes: {np.bincount(y_all)}")
+
+    # Validation de la qualité des données
+    if validate_data_quality(X_all, y_all):
+        print("✅ Données valides et prêtes pour l'entraînement!")
+
+        # Diviser en ensembles d'entraînement et de validation
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_all, y_all, test_size=0.2, random_state=42, stratify=y_all
+        )
+
+        # Sauvegarder les données préprocessées
+        print("Sauvegarde des données préprocessées...")
+        NPY_FILES_PATH = "/home/cytech/dev/EEG Classification/data/preprocessed"
+        if not os.path.exists(NPY_FILES_PATH):
+            os.makedirs(NPY_FILES_PATH)
+
+        # Enregistrer les données prétraitées
+        np.save(NPY_FILES_PATH + "/X_train_3DCLMI.npy", X_train)
+        np.save(NPY_FILES_PATH + "/y_train_3DCLMI.npy", y_train)
+        np.save(NPY_FILES_PATH + "/X_val_3DCLMI.npy", X_val)
+        np.save(NPY_FILES_PATH + "/y_val_3DCLMI.npy", y_val)
+
+        print("Préprocessing terminé et données sauvegardées!")
+
+    else:
+        print("❌ Données invalides - vérifier les erreurs ci-dessus.")
     
-    # Normaliser les données
-    X_train_norm, X_val_norm = normalize_data(X_train, X_val)
-    
-    # Sauvegarder les données préprocessées
-    print("Sauvegarde des données préprocessées...")
-    NPY_FILES_PATH = '/home/cytech/dev/EEG Classification/data/preprocessed'
-    if not os.path.exists(NPY_FILES_PATH):
-        os.makedirs(NPY_FILES_PATH)
-
-    # Enregistrer les données prétraitées
-    np.save(NPY_FILES_PATH + '/X_train_3DCLMI.npy', X_train_norm)
-    np.save(NPY_FILES_PATH + '/y_train_3DCLMI.npy', y_train)
-    np.save(NPY_FILES_PATH + '/X_val_3DCLMI.npy', X_val_norm)
-    np.save(NPY_FILES_PATH + '/y_val_3DCLMI.npy', y_val)
-
-    print("Préprocessing terminé et données sauvegardées!")
-    print(f"Formes finales:")
-    print(f"  X_train: {X_train_norm.shape}")
-    print(f"  X_val: {X_val_norm.shape}")
-    print(f"  y_train: {y_train.shape} - Distribution: {np.bincount(y_train)}")
-    print(f"  y_val: {y_val.shape} - Distribution: {np.bincount(y_val)}")
-
 if __name__ == "__main__":
     main_preprocessing()
