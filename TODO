@@ -1,0 +1,17 @@
+Étape 1 - Chargement et Configuration Initiale : 
+    ☐ Charger les données et définir les positions des électrodes. 
+    ☐ Définir le montage des électrodes
+
+Étape 2 - Filtrage et Nettoyage des Données Continues : 
+    ☐ Objectif : Améliorer le rapport signal/bruit avant la découpe en époques.
+    ☐ Re-référencement CAR - Common Average Reference
+
+Étape 3 - Extraction des Époques et Rejet d'Artefacts : 
+    ☐ Segmenter les données autour des événements d'intérêt et retirer les essais bruités. @started(25-06-07 21:59)
+    ☐ Optionnel : ICA pour supprimer les artéfacts oculaires ou cardiaques avant cette étape.
+
+Étape 4 - Transformation Temps-Fréquence (TFR) :
+    ☐ Calcul du spectrogramme multi-bande par époque
+
+Étape 5 - Formatage Final et Sauvegarde :
+    ☐ Préparer les données pour l'entraînement.

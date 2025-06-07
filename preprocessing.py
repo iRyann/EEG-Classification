@@ -13,6 +13,12 @@ from mne.decoding import CSP
 import warnings
 warnings.filterwarnings('ignore')
 
+# Global variables
+DATA_DIR = 'data'  # Répertoire des données
+RAW_DIR = join(DATA_DIR, 'raw')  # Répertoire des fichiers bruts
+DATA_PREPROCESSED_DIR = join(DATA_DIR, 'preprocessed')  # Répertoire des données prétraitées
+
+
 
 def extract_epochs(raw : mne.io.Raw) -> tuple:
     """
@@ -42,7 +48,7 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
     
     tmin = 3.0  # 0.5s après le cue
     tmax = 5.0  # 2s d'imagerie motrice active
-    baseline = (2.0, 2.5)  # Avant le cue
+    baseline = (-1, -0.5)  # Avant le cue
 
     epochs = mne.Epochs(
         raw, events, event_mapping,
