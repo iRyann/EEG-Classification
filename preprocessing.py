@@ -64,7 +64,7 @@ def format_raw(raw: mne.io.Raw) -> mne.io.Raw:
     raw.set_eog_channels(eog_channels, verbose=False)
     raw.set_eeg_reference('average', projection=True)
 
-    raw.filter(1.0, 40.0, fir_design='firwin', verbose=False)
+    raw.filter(4.0, 40.0, fir_design='firwin', verbose=False)
     raw.interpolate_bads(reset_bads=True, verbose=False)
     raw.drop_channels(eog_channels, verbose=False)
     
