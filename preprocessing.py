@@ -214,6 +214,20 @@ def save_preprocessed_data(data: np.ndarray, labels: np.ndarray, filename: str) 
     np.savez(file_path, data=data, labels=labels)
     DBG_PRINT(f"Données prétraitées enregistrées dans {file_path}")
 
+def validate_preprocessing_output(x, y):
+    """Validation des données prétraitées"""
+    print(f"Shape des données: {x.shape}")
+    print(f"Shape des labels: {y.shape}")
+    print(f"Range des données: [{x.min():.3f}, {x.max():.3f}]")
+    print(f"Labels uniques: {np.unique(y, return_counts=True)}")
+    
+    # Vérifications critiques
+    assert len(x) == len(y), "Mismatch entre données et labels"
+    assert x.ndim == 5, f"Dimensions incorrectes: {x.ndim} au lieu de 5"
+    assert np.all(np.isfinite(x)), "Données contiennent NaN/Inf"
+    assert set(y) == {0, 1, 2, 3}, f"Labels incorrects: {set(y)}"
+
+    return True
 def main(verbose: bool = True) -> None:
     """
     Fonction principale pour exécuter le prétraitement des données EEG.
@@ -230,7 +244,8 @@ def main(verbose: bool = True) -> None:
         return
     
     preprocessed_data, labels = preprocess_data(raw_data)
-    save_preprocessed_data(preprocessed_data, labels, 'preprocessed_data.npz')
+    if validate_preprocessing_output(preprocessed_data, labels):
+        save_preprocessed_data(preprocessed_data, labels, 'preprocessed_data.npz')
 
 if __name__ == "__main__":
     main(verbose=True)
