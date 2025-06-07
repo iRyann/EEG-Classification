@@ -9,16 +9,16 @@ from scipy.signal import hilbert, welch
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import RobustScaler
-from mne.decoding import CSP
+from mne.time_frequency import tfr_multitaper
 import warnings
 warnings.filterwarnings('ignore')
 
 # Global variables
-DATA_DIR = 'data'  # Répertoire des données
-RAW_DIR = join(DATA_DIR, 'raw')  # Répertoire des fichiers bruts
-DATA_PREPROCESSED_DIR = join(DATA_DIR, 'preprocessed')  # Répertoire des données prétraitées
-VERBOSE = True  # Contrôle l'affichage des messages
-DBG_PRINT = print if VERBOSE else lambda *args, **kwargs: None  # Redéfinir print si verbose est False
+DATA_DIR = 'data'
+RAW_DIR = join(DATA_DIR, 'raw') 
+DATA_PREPROCESSED_DIR = join(DATA_DIR, 'preprocessed') 
+VERBOSE = True
+DBG_PRINT = print if VERBOSE else lambda *args, **kwargs: None 
 
 
 def load_raw_data(dir_path: str) -> list[mne.io.Raw]:
@@ -76,9 +76,9 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
     Args:
         raw (mne.io.Raw): Enregistrement MNE Raw contenant les données EEG.
     Returns:
-        tuple: Un tuple contenant les époques extraites et le mapping des événements.
+        tuple: Un tuple contenant les données extraites et le mapping des événements.
     """
-    print("=== EXTRACTION D'ÉPOQUES ===")
+    DBG_PRINT("=== EXTRACTION D'ÉPOQUES ===")
     
     events, events_ids = mne.events_from_annotations(raw)
     
@@ -86,7 +86,7 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
     try:
         motor_event_ids_effective = [events_ids[key] for key in motor_event_ids]
     except KeyError as e:
-        print(f"Erreur: Événement manquant {e}")
+        DBG_PRINT(f"Erreur: Événement manquant {e}")
         return None, None
     
     event_mapping = {
@@ -98,7 +98,7 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
     
     tmin = 3.0  # 0.5s après le cue
     tmax = 5.0  # 2s d'imagerie motrice active
-    baseline = (-1, -0.5)  # Avant le cue
+    baseline = (-1, -0.5)  # Avant le cue pr normaliser les données
 
     epochs = mne.Epochs(
         raw, events, event_mapping,
@@ -120,3 +120,97 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
         DBG_PRINT(f"  Classe {event}: {count} essais")
 
     return epochs, event_mapping
+
+def compute_multitaper_spectrogram(epochs: mne.Epochs) -> np.ndarray:
+    """
+    Calculer le spectrogramme multi-taper pour les époques EEG.
+    Args:
+        epochs (mne.Epochs): Époques MNE contenant les données EEG.
+    Returns:
+        np.ndarray: Spectrogramme multi-taper (n_epochs, n_channels, n_freqs, n_times).
+    """
+    DBG_PRINT("=== CALCUL DU SPECTROGRAMME MULTI-TAPER ===")
+    
+    freqs = np.arange(8, 31, 1)
+    power = tfr_multitaper(
+        epochs, freqs=freqs, n_cycles=freqs/2,
+        use_fft=True, return_itc=False,
+        decim=2, n_jobs=1
+    )
+
+    # Normalisation log pour stabiliser la variance
+    power_data = np.log10(power.data + 1e-12)
+
+    return power_data  # (n_epochs, n_channels, n_freqs, n_times)
+
+
+def create_3d_tensor_corrected(power_data : np.ndarray) -> np.ndarray:
+    """
+    Créer un tenseur 3D à partir des données de puissance pour l'entrée du modèle CNN 3D.
+    Args:
+        power_data (np.ndarray): Données de puissance (n_epochs, n_channels, n_freqs, n_times).
+    Returns:
+        np.ndarray: Tenseur 3D formaté pour le modèle CNN 3D (n_epochs, n_freqs, n_times, n_channels, 1).
+    """
+    DBG_PRINT("=== CRÉATION DU TENSEUR 3D ===")
+    
+    # Réorganiser les dimensions pour le modèle CNN 3D
+    # Format: (n_epochs, n_freqs, n_times, n_channels, 1)
+    x_3d = np.transpose(power_data, (0, 2, 3, 1))  # (epochs, freqs, times, channels)
+    x_3d = np.expand_dims(x_3d, axis=-1)  # Ajouter dimension des features
+
+    DBG_PRINT(f"Tenseur 3D créé: {x_3d.shape}")
+    return x_3d
+
+def preprocess_data(raw_data: list[mne.io.Raw]) -> np.ndarray:
+    """
+    Prétraiter les données brutes EEG pour l'entrée du modèle CNN 3D.
+    Args:
+        raw_data (list[mne.io.Raw]): Liste d'enregistrements MNE Raw.
+    Returns:
+        np.ndarray: Tenseur 3D contenant les données prétraitées.
+    """
+    DBG_PRINT("=== PRÉTRAITEMENT DES DONNÉES ===")
+    formatted_data = [format_raw(raw) for raw in raw_data]
+    epochs_data = [extract_epochs(raw) for raw in formatted_data]
+    y = [epochs[0].events[:, 2] for epochs in epochs_data if epochs[0] is not None]
+    spectrograms = [compute_multitaper_spectrogram(epochs) for epochs in epochs_data]
+    tensors_3d = [create_3d_tensor_corrected(power_data) for power_data in spectrograms]
+
+    return np.concatenate(tensors_3d, axis=0), y
+
+def save_preprocessed_data(data: np.ndarray, labels: np.ndarray, filename: str) -> None:
+    """
+    Enregistrer les données prétraitées dans un fichier .npy.
+    Args:
+        data (np.ndarray): Tenseur 3D contenant les données prétraitées.
+        labels (np.ndarray): Labels associés aux données.
+        filename (str): Nom du fichier pour enregistrer les données.
+    """
+    if not os.path.exists(DATA_PREPROCESSED_DIR):
+        os.makedirs(DATA_PREPROCESSED_DIR)
+
+    file_path = join(DATA_PREPROCESSED_DIR, filename)
+    np.savez(file_path, data=data, labels=labels)
+    DBG_PRINT(f"Données prétraitées enregistrées dans {file_path}")
+
+def main(verbose: bool = True) -> None:
+    """
+    Fonction principale pour exécuter le prétraitement des données EEG.
+    Args:
+        verbose (bool): Si True, active les messages de débogage.
+    """
+    global VERBOSE, DBG_PRINT
+    VERBOSE = verbose
+    DBG_PRINT = print if VERBOSE else lambda *args, **kwargs: None
+
+    raw_data = load_raw_data(RAW_DIR)
+    if not raw_data:
+        DBG_PRINT("Aucune donnée brute chargée. Fin du programme.")
+        return
+    
+    preprocessed_data, labels = preprocess_data(raw_data)
+    save_preprocessed_data(preprocessed_data, labels, 'preprocessed_data.npz')
+
+if __name__ == "__main__":
+    main(verbose=True)
