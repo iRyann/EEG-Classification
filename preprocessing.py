@@ -157,27 +157,47 @@ def create_3d_tensor_corrected(power_data : np.ndarray) -> np.ndarray:
     # Réorganiser les dimensions pour le modèle CNN 3D
     # Format: (n_epochs, n_freqs, n_times, n_channels, 1)
     x_3d = np.transpose(power_data, (0, 2, 3, 1))  # (epochs, freqs, times, channels)
-    x_3d = np.expand_dims(x_3d, axis=-1)  # Ajouter dimension des features
 
     DBG_PRINT(f"Tenseur 3D créé: {x_3d.shape}")
     return x_3d
 
-def preprocess_data(raw_data: list[mne.io.Raw]) -> np.ndarray:
-    """
-    Prétraiter les données brutes EEG pour l'entrée du modèle CNN 3D.
-    Args:
-        raw_data (list[mne.io.Raw]): Liste d'enregistrements MNE Raw.
-    Returns:
-        np.ndarray: Tenseur 3D contenant les données prétraitées.
-    """
-    DBG_PRINT("=== PRÉTRAITEMENT DES DONNÉES ===")
-    formatted_data = [format_raw(raw) for raw in raw_data]
-    epochs_data = [extract_epochs(raw) for raw in formatted_data]
-    y = [epochs[0].events[:, 2] for epochs in epochs_data if epochs[0] is not None]
-    spectrograms = [compute_multitaper_spectrogram(epochs) for epochs in epochs_data]
-    tensors_3d = [create_3d_tensor_corrected(power_data) for power_data in spectrograms]
+def normalize_spectrograms(power_data):
+    """Normalisation robuste des spectrogrammes"""
+    from sklearn.preprocessing import RobustScaler
+    
+    original_shape = power_data.shape
+    power_flat = power_data.reshape(original_shape[0], -1)
+    scaler = RobustScaler()
+    power_normalized = scaler.fit_transform(power_flat)
+    power_normalized = power_normalized.reshape(original_shape)
+    
+    return power_normalized, scaler
 
-    return np.concatenate(tensors_3d, axis=0), y
+
+def preprocess_data(raw_data: list[mne.io.Raw]) -> tuple:
+    """Version corrigée avec labels appropriés"""
+    DBG_PRINT("=== PRÉTRAITEMENT DES DONNÉES ===")
+    
+    all_spectrograms = []
+    all_labels = []
+    
+    for raw in raw_data:
+        formatted = format_raw(raw)
+        epochs, event_mapping = extract_epochs(formatted)
+        
+        if epochs is not None:
+            spectrogram = compute_multitaper_spectrogram(epochs)
+            scaled_spectrogram, _ = normalize_spectrograms(spectrogram)
+            labels = epochs.events[:, 2]
+            mapped_labels = np.array([event_mapping[label] for label in labels])
+            all_spectrograms.append(scaled_spectrogram)
+            all_labels.append(mapped_labels)
+    
+    x = np.concatenate(all_spectrograms, axis=0)
+    y = np.concatenate(all_labels, axis=0)
+    x_formatted = create_3d_tensor_corrected(x)
+
+    return x_formatted, y
 
 def save_preprocessed_data(data: np.ndarray, labels: np.ndarray, filename: str) -> None:
     """
