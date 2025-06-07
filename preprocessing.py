@@ -37,7 +37,7 @@ def load_raw_data(dir_path: str) -> list[mne.io.Raw]:
         for file in files:
             file_path = join(dir_path, file)
             DBG_PRINT(f"Chargement du fichier: {file_path}")
-            raw = mne.io.read_raw_brainvision(file_path, preload=True, verbose=False)
+            raw = mne.io.read_raw_gdf(file_path, preload=True, verbose=False)
             raw_data.append(raw)
         DBG_PRINT(f"{len(raw_data)} fichiers chargés avec succès.")
         return raw_data
@@ -96,8 +96,8 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
         motor_event_ids_effective[3]: 3   # Tongue
     }
     
-    tmin = 3.0  # 0.5s après le cue
-    tmax = 5.0  # 2s d'imagerie motrice active
+    tmin = 1.0  # 0.5s après le cue
+    tmax = 3.0  # 2s d'imagerie motrice active
     baseline = (-1, -0.5)  # Avant le cue pr normaliser les données
 
     epochs = mne.Epochs(
@@ -135,7 +135,8 @@ def compute_multitaper_spectrogram(epochs: mne.Epochs) -> np.ndarray:
     power = tfr_multitaper(
         epochs, freqs=freqs, n_cycles=freqs/2,
         use_fft=True, return_itc=False,
-        decim=2, n_jobs=1
+        decim=2, n_jobs=1, 
+        average=False, verbose=False
     )
 
     # Normalisation log pour stabiliser la variance
@@ -189,10 +190,9 @@ def preprocess_data(raw_data: list[mne.io.Raw]) -> tuple:
             spectrogram = compute_multitaper_spectrogram(epochs)
             scaled_spectrogram, _ = normalize_spectrograms(spectrogram)
             labels = epochs.events[:, 2]
-            mapped_labels = np.array([event_mapping[label] for label in labels])
             all_spectrograms.append(scaled_spectrogram)
-            all_labels.append(mapped_labels)
-    
+            all_labels.append(labels)
+
     x = np.concatenate(all_spectrograms, axis=0)
     y = np.concatenate(all_labels, axis=0)
     x_formatted = create_3d_tensor_corrected(x)
@@ -223,7 +223,7 @@ def validate_preprocessing_output(x, y):
     
     # Vérifications critiques
     assert len(x) == len(y), "Mismatch entre données et labels"
-    assert x.ndim == 5, f"Dimensions incorrectes: {x.ndim} au lieu de 5"
+    assert x.ndim == 4, f"Dimensions incorrectes: {x.ndim} au lieu de 4"
     assert np.all(np.isfinite(x)), "Données contiennent NaN/Inf"
     assert set(y) == {0, 1, 2, 3}, f"Labels incorrects: {set(y)}"
 
