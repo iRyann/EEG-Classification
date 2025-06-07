@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import RobustScaler
 from mne.time_frequency import tfr_multitaper
+import joblib
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -211,7 +212,9 @@ def save_preprocessed_data(data: np.ndarray, labels: np.ndarray, scaler: RobustS
         os.makedirs(DATA_PREPROCESSED_DIR)
 
     file_path = join(DATA_PREPROCESSED_DIR, filename)
-    np.savez(file_path, data=data, labels=labels, scaler=scaler)
+    np.savez(file_path, data=data, labels=labels)
+    joblib.dump(scaler, join(DATA_PREPROCESSED_DIR, 'scaler.save'))
+
     DBG_PRINT(f"Données prétraitées enregistrées dans {file_path}")
 
 def validate_preprocessing_output(x, y, scaler: RobustScaler) -> bool:
