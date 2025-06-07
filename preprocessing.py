@@ -162,17 +162,15 @@ def create_3d_tensor_corrected(power_data : np.ndarray) -> np.ndarray:
     DBG_PRINT(f"Tenseur 3D créé: {x_3d.shape}")
     return x_3d
 
-def normalize_spectrograms(power_data):
+def normalize_spectrograms(power_data : np.ndarray, scaler : RobustScaler) -> np.ndarray:
     """Normalisation robuste des spectrogrammes"""
-    from sklearn.preprocessing import RobustScaler
     
     original_shape = power_data.shape
     power_flat = power_data.reshape(original_shape[0], -1)
-    scaler = RobustScaler()
     power_normalized = scaler.fit_transform(power_flat)
     power_normalized = power_normalized.reshape(original_shape)
-    
-    return power_normalized, scaler
+
+    return power_normalized
 
 
 def preprocess_data(raw_data: list[mne.io.Raw]) -> tuple:
@@ -181,14 +179,15 @@ def preprocess_data(raw_data: list[mne.io.Raw]) -> tuple:
     
     all_spectrograms = []
     all_labels = []
+    scaler = RobustScaler()
     
     for raw in raw_data:
         formatted = format_raw(raw)
-        epochs, event_mapping = extract_epochs(formatted)
+        epochs, _ = extract_epochs(formatted)
         
         if epochs is not None:
             spectrogram = compute_multitaper_spectrogram(epochs)
-            scaled_spectrogram, _ = normalize_spectrograms(spectrogram)
+            scaled_spectrogram = normalize_spectrograms(spectrogram, scaler)
             labels = epochs.events[:, 2]
             all_spectrograms.append(scaled_spectrogram)
             all_labels.append(labels)
@@ -197,30 +196,31 @@ def preprocess_data(raw_data: list[mne.io.Raw]) -> tuple:
     y = np.concatenate(all_labels, axis=0)
     x_formatted = create_3d_tensor_corrected(x)
 
-    return x_formatted, y
+    return x_formatted, y, scaler
 
-def save_preprocessed_data(data: np.ndarray, labels: np.ndarray, filename: str) -> None:
+def save_preprocessed_data(data: np.ndarray, labels: np.ndarray, scaler: RobustScaler, filename: str) -> None:
     """
     Enregistrer les données prétraitées dans un fichier .npy.
     Args:
         data (np.ndarray): Tenseur 3D contenant les données prétraitées.
         labels (np.ndarray): Labels associés aux données.
+        scaler (RobustScaler): Scaler utilisé pour normaliser les données.
         filename (str): Nom du fichier pour enregistrer les données.
     """
     if not os.path.exists(DATA_PREPROCESSED_DIR):
         os.makedirs(DATA_PREPROCESSED_DIR)
 
     file_path = join(DATA_PREPROCESSED_DIR, filename)
-    np.savez(file_path, data=data, labels=labels)
+    np.savez(file_path, data=data, labels=labels, scaler=scaler)
     DBG_PRINT(f"Données prétraitées enregistrées dans {file_path}")
 
-def validate_preprocessing_output(x, y):
+def validate_preprocessing_output(x, y, scaler: RobustScaler) -> bool:
     """Validation des données prétraitées"""
     print(f"Shape des données: {x.shape}")
     print(f"Shape des labels: {y.shape}")
     print(f"Range des données: [{x.min():.3f}, {x.max():.3f}]")
     print(f"Labels uniques: {np.unique(y, return_counts=True)}")
-    
+    print(f"Scaler utilisé: {scaler}")  
     # Vérifications critiques
     assert len(x) == len(y), "Mismatch entre données et labels"
     assert x.ndim == 4, f"Dimensions incorrectes: {x.ndim} au lieu de 4"
@@ -243,9 +243,9 @@ def main(verbose: bool = True) -> None:
         DBG_PRINT("Aucune donnée brute chargée. Fin du programme.")
         return
     
-    preprocessed_data, labels = preprocess_data(raw_data)
-    if validate_preprocessing_output(preprocessed_data, labels):
-        save_preprocessed_data(preprocessed_data, labels, 'preprocessed_data.npz')
+    preprocessed_data, labels, scaler = preprocess_data(raw_data)
+    if validate_preprocessing_output(preprocessed_data, labels, scaler):
+        save_preprocessed_data(preprocessed_data, labels, scaler, 'preprocessed_data.npz')
 
 if __name__ == "__main__":
     main(verbose=True)
