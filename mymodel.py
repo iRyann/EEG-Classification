@@ -11,3 +11,9 @@ from keras.layers import Input, Conv3D, MaxPooling3D, Dense, Dropout, Flatten, L
 from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from keras.optimizers import Adam
 from keras.regularizers import l2
+from utils.model import diagnostic_data_quality
+
+def validate_data(x, y):
+    stats = diagnostic_data_quality(x,y)
+    
+    if 
