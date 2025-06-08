@@ -146,22 +146,40 @@ def compute_multitaper_spectrogram(epochs: mne.Epochs) -> np.ndarray:
     return power_data  # (n_epochs, n_channels, n_freqs, n_times)
 
 
-def create_3d_tensor_corrected(power_data : np.ndarray) -> np.ndarray:
+def create_optimized_tensor(power_data, model_type='cnn_2d'):
     """
-    Créer un tenseur 3D à partir des données de puissance pour l'entrée du modèle CNN 3D.
-    Args:
-        power_data (np.ndarray): Données de puissance (n_epochs, n_channels, n_freqs, n_times).
-    Returns:
-        np.ndarray: Tenseur 3D formaté pour le modèle CNN 3D (n_epochs, n_freqs, n_times, n_channels, 1).
-    """
-    DBG_PRINT("=== CRÉATION DU TENSEUR 3D ===")
+    Version corrigée et optimisée du formatage de tenseur.
     
-    # Réorganiser les dimensions pour le modèle CNN 3D
-    # Format: (n_epochs, n_freqs, n_times, n_channels, 1)
-    x_3d = np.transpose(power_data, (0, 2, 3, 1))  # (epochs, freqs, times, channels)
-
-    DBG_PRINT(f"Tenseur 3D créé: {x_3d.shape}")
-    return x_3d
+    Args:
+        power_data: (n_epochs, n_channels, n_freqs, n_times)
+        model_type: Type de modèle cible
+    
+    Returns:
+        np.ndarray: Tenseur formaté optimalement
+    """
+    if model_type == 'cnn_2d':
+        # Format optimal pour CNN 2D : pas de changement nécessaire !
+        return power_data
+    
+    elif model_type == 'lstm':
+        # Format pour LSTM : (epochs, time, features)
+        n_epochs, n_channels, n_freqs, n_times = power_data.shape
+        return power_data.reshape(n_epochs, n_times, n_channels * n_freqs)
+    
+    elif model_type == 'cnn_3d':
+        # Format pour CNN 3D : ajouter dimension channel
+        return np.expand_dims(power_data, axis=1)
+    
+    elif model_type == 'hybrid':
+        # Retourner les deux formats pour modèle hybride
+        n_epochs, n_channels, n_freqs, n_times = power_data.shape
+        return {
+            'cnn': power_data,
+            'lstm': power_data.reshape(n_epochs, n_times, n_channels * n_freqs)
+        }
+    
+    else:
+        raise ValueError(f"Type de modèle non supporté: {model_type}")
 
 def normalize_spectrograms(power_data : np.ndarray, scaler : RobustScaler) -> np.ndarray:
     """Normalisation robuste des spectrogrammes"""
@@ -195,7 +213,7 @@ def preprocess_data(raw_data: list[mne.io.Raw]) -> tuple:
 
     x = np.concatenate(all_spectrograms, axis=0)
     y = np.concatenate(all_labels, axis=0)
-    x_formatted = create_3d_tensor_corrected(x)
+    x_formatted = create_optimized_tensor(x, model_type='cnn_3d')
 
     return x_formatted, y, scaler
 
