@@ -13,7 +13,3 @@ from keras.optimizers import Adam
 from keras.regularizers import l2
 from utils.model import diagnostic_data_quality
 
-def validate_data(x, y):
-    stats = diagnostic_data_quality(x,y)
-    
-    if 

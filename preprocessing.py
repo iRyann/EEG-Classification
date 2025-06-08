@@ -157,6 +157,12 @@ def create_optimized_tensor(power_data, model_type='cnn_2d'):
     Returns:
         np.ndarray: Tenseur formaté optimalement
     """
+    if not isinstance(power_data, np.ndarray):
+        raise TypeError("power_data doit être un numpy array")
+    
+    if power_data.ndim != 4:
+        raise ValueError(f"Attendu 4D, reçu {power_data.ndim}D")
+
     if model_type == 'cnn_2d':
         # Format optimal pour CNN 2D : pas de changement nécessaire !
         return power_data

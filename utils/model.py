@@ -10,7 +10,7 @@ Data utils
 def add_gaussian_noise(x):
     x_noised =  x.copy()
     x_std = np.std(x) * 0.05
-    noise = np.ramdom.normal(0, x_std, x.shape)
+    noise = np.random.normal(0, x_std, x.shape)
     x_noised += noise
     return x_noised
 
@@ -18,6 +18,7 @@ def temporal_shift(x):
     time_shift = np.random.randint(-2, 3)
     if time_shift != 0:
         return np.roll(x, shift=time_shift, axis=2)
+    return x
     
 def rescale(x):
         scale_factor = np.random.uniform(0.9, 1.1)
@@ -83,24 +84,13 @@ def diagnostic_data_quality(x, y,mt= 'cnn_2d', class_names=['Left Hand', 'Right 
                 # Format attendu: (n_epochs, n_channels, n_freqs, n_times)
                 # On moyenne sur epochs et channels
                 class_data = x[class_mask].mean(axis=(0, 1))
-                freq_axis = 1
-                time_axis = 2
             elif mt == 'lstm':
                 # Format attendu: (n_epochs, n_times, n_channels, n_freqs)
                 # On moyenne sur epochs et channels
                 class_data = x[class_mask].mean(axis=(0, 2))
-                freq_axis = 3
-                time_axis = 1
             else:
                 # Par défaut, on suppose (n_epochs, n_channels, n_freqs, n_times)
                 class_data = x[class_mask].mean(axis=(0, 1))
-                freq_axis = 1
-                time_axis = 2
-
-            # S'assurer que class_data est bien 2D (freq, time)
-            if class_data.ndim > 2:
-                # On tente de réduire à 2D en gardant freq et time
-                class_data = np.mean(class_data, axis=tuple(i for i in range(class_data.ndim) if i not in [freq_axis, time_axis]))
 
             im = axes[class_idx].imshow(class_data, aspect='auto', origin='lower',
                                         cmap='viridis', extent=[0, class_data.shape[-1], 8, 30])
