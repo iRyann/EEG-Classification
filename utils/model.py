@@ -43,116 +43,58 @@ def augment_eeg_data(x, y, augmentation_factor=2):
 
 # ------ Data validation ------
 
-#TODO: Possibilité de retourne le dictionnaire de stats...
-def diagnostic_data_quality(x, y, mt= 'cnn_2d', class_names=['Left Hand', 'Right Hand', 'Feet', 'Tongue'], verbose = False):
-    """
-    Diagnostic complet de la qualité des données
-    """
-    PRINTV = print if verbose else lambda *args, **kwargs: None 
-
-    # 1. Distribution des classes
-    class_counts = np.bincount(y)
-    class_distribution = class_counts / len(y)
-
-    # 2. Statistiques des features
-    data_shape = x.shape
-    data_min = x.min()
-    data_max = x.max()
-    data_mean = x.mean()
-    data_std = x.std()
-
-    # Stockage dans un dictionnaire
-    stats = {
-        "class_counts": class_counts.tolist(),
-        "class_distribution": class_distribution.tolist(),
-        "data_shape": data_shape,
-        "data_min": float(data_min),
-        "data_max": float(data_max),
-        "data_mean": float(data_mean),
-        "data_std": float(data_std)
-    }
-
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    axes = axes.flatten()
+def diagnostic_data_quality_fixed(x, y, verbose=True):
+    """Version optimisée sans blocage LDA"""
     
-    for class_idx in range(4):
-        class_mask = y == class_idx
-        if np.sum(class_mask) > 0:
-            # Adapter le calcul de la moyenne selon le type de modèle
-            # Déterminer les axes à moyenner selon le format attendu
-            if mt == 'cnn_2d':
-                # Format attendu: (n_epochs, n_channels, n_freqs, n_times)
-                # On moyenne sur epochs et channels
-                class_data = x[class_mask].mean(axis=(0, 1))
-            elif mt == 'lstm':
-                # Format attendu: (n_epochs, n_times, n_channels, n_freqs)
-                # On moyenne sur epochs et channels
-                class_data = x[class_mask].mean(axis=(0, 2))
-            else:
-                # Par défaut, on suppose (n_epochs, n_channels, n_freqs, n_times)
-                class_data = x[class_mask].mean(axis=(0, 1))
-
-            im = axes[class_idx].imshow(class_data, aspect='auto', origin='lower',
-                                        cmap='viridis', extent=[0, class_data.shape[-1], 8, 30])
-            axes[class_idx].set_title(f'{class_names[class_idx]} (n={np.sum(class_mask)})')
-            axes[class_idx].set_xlabel('Temps (bins)')
-            axes[class_idx].set_ylabel('Fréquence (Hz)')
-            plt.colorbar(im, ax=axes[class_idx])
-    
-    plt.tight_layout()
-    plt.savefig('spectrograms_by_class.png', dpi=300, bbox_inches='tight')
-    plt.show()
-    
-    PRINTV("\n=== ANALYSE DE VARIANCE INTER-CLASSES ===")
-    
-    x_flattened = x.reshape(x.shape[0], -1)  # Aplatir toutes les dimensions
-    
-    total_variance = np.var(x_flattened, axis=0)
-    within_class_variances = []
-    
-    for class_idx in range(4):
-        class_mask = y == class_idx
-        if np.sum(class_mask) > 1:
-            class_var = np.var(x_flattened[class_mask], axis=0)
-            within_class_variances.append(class_var)
-    
-    within_class_variance = np.mean(within_class_variances, axis=0)
-    between_class_variance = total_variance - within_class_variance
-    
-    # Ratio de Fisher (between/within variance)
-    fisher_ratio = between_class_variance / (within_class_variance + 1e-8)
-    
-    stats.update({
-        "total_variance_mean": float(total_variance.mean()),
-        "within_class_variance_mean": float(within_class_variance.mean()),
-        "between_class_variance_mean": float(between_class_variance.mean()),
-        "fisher_ratio_mean": float(fisher_ratio.mean()),
-        "fisher_ratio_above_1_pct": float((fisher_ratio > 1).mean() * 100)
-    })
-
-    # 4. Vérifier la séparabilité inter-classes
+    # Réduction de dimensionnalité avant LDA
+    from sklearn.decomposition import PCA
     from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
     
     x_flat = x.reshape(x.shape[0], -1)
     
-    # Test rapide de séparabilité avec LDA
+    # PCA pour réduire dimensionnalité
+    n_components = min(500, x_flat.shape[1], x_flat.shape[0]-1)
+    pca = PCA(n_components=n_components)
+    x_reduced = pca.fit_transform(x_flat)
+    
+    print(f"Réduction PCA: {x_flat.shape[1]} -> {x_reduced.shape[1]} features")
+    print(f"Variance expliquée: {pca.explained_variance_ratio_.sum():.3f}")
+    
+    # LDA sur données réduites
     try:
         lda = LinearDiscriminantAnalysis()
-        lda.fit(x_flat, y)
-        lda_score = lda.score(x_flat, y)
-        PRINTV(f"Score LDA (séparabilité): {lda_score:.3f}")
+        lda.fit(x_reduced, y)
+        lda_score = lda.score(x_reduced, y)
+        print(f"Score LDA: {lda_score:.3f}")
         
-        if lda_score > 0.3:
-            PRINTV("✅ Séparabilité acceptable")
-        else:
-            PRINTV("⚠️ Séparabilité faible - vérifier les features")
-            
+        # Analyse de variance corrigée
+        analyze_class_separability(x_reduced, y)
+        
     except Exception as e:
-        PRINTV(f"⚠️ Impossible de calculer la séparabilité: {e}")
+        print(f"Erreur LDA: {e}")
+    
+    return True
 
-    # Acceptabilité :
+def analyze_class_separability(x, y):
+    """Analyse détaillée de la séparabilité"""
+    from scipy.stats import f_oneway
     
-    print(stats)
-    decision = True if input("Accepter (T) ou Refuser (F)") == "T" else False
+    # Test ANOVA sur chaque feature
+    f_stats = []
+    p_values = []
     
-    return decision
+    for feature_idx in range(min(100, x.shape[1])):  # Limiter pour performance
+        groups = [x[y == class_idx, feature_idx] for class_idx in range(4)]
+        groups = [g for g in groups if len(g) > 1]  # Filtrer groupes vides
+        
+        if len(groups) == 4:
+            f_stat, p_val = f_oneway(*groups)
+            f_stats.append(f_stat)
+            p_values.append(p_val)
+    
+    f_stats = np.array(f_stats)
+    p_values = np.array(p_values)
+    
+    print(f"Features significatives (p<0.05): {(p_values < 0.05).sum()}/{len(p_values)}")
+    print(f"F-statistic moyenne: {f_stats.mean():.3f}")
+    print(f"F-statistic max: {f_stats.max():.3f}")

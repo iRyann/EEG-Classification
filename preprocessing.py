@@ -70,7 +70,7 @@ def format_raw(raw: mne.io.Raw) -> mne.io.Raw:
     raw.rename_channels(mapping)
     raw.set_montage(montage, verbose=False)
     raw.set_eeg_reference('average')
-    raw.filter(4.0, 40.0, fir_design='firwin', verbose=False)
+    raw.filter(0.5, 40.0, fir_design='firwin', verbose=False) 
     raw.interpolate_bads(reset_bads=True, verbose=False)
     raw.drop_channels(['EOG-left', 'EOG-central', 'EOG-right'])  
 
@@ -102,9 +102,9 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
         'tongue': motor_event_ids_effective[3]
     }
     
-    tmin = 2.0  # 0.5s après le cue
-    tmax = 4.5  # 2s d'imagerie motrice active
-    baseline = (2, 2.5)  # Avant le cue pr normaliser les données
+    tmin = -0.5   # Avant le cue pour baseline
+    tmax = 4.0    # Fin de l'imagerie motrice
+    baseline = (-0.5, 0)  # Baseline avant le cue
 
     epochs = mne.Epochs(
         raw, events, event_mapping,
@@ -128,28 +128,23 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
 
     return epochs, event_mapping
 
-def compute_multitaper_spectrogram(epochs: mne.Epochs) -> np.ndarray:
-    """
-    Calculer le spectrogramme multi-taper pour les époques EEG.
-    Args:
-        epochs (mne.Epochs): Époques MNE contenant les données EEG.
-    Returns:
-        np.ndarray: Spectrogramme multi-taper (n_epochs, n_channels, n_freqs, n_times).
-    """
-    DBG_PRINT("=== CALCUL DU SPECTROGRAMME MULTI-TAPER ===")
+def compute_multitaper_spectrogram_fixed(epochs):
+    """Version corrigée avec bandes de fréquences optimales"""
+    # Bandes critiques pour imagerie motrice
+    freqs = np.logspace(np.log10(8), np.log10(30), 15)  # Distribution log
     
-    freqs = np.arange(8, 31, 1)
     power = tfr_multitaper(
         epochs, freqs=freqs, n_cycles=freqs/2,
         use_fft=True, return_itc=False,
-        decim=2, n_jobs=1, 
+        decim=1,  # Pas de décimation supplémentaire
+        n_jobs=-1, 
         average=False, verbose=False
     )
-
-    # Normalisation log pour stabiliser la variance
-    power_data = np.log10(power.data + 1e-12)
-
-    return power_data  # (n_epochs, n_channels, n_freqs, n_times)
+    
+    # Normalisation log mais avec offset plus approprié
+    power_data = 10 * np.log10(power.data + np.finfo(float).eps)
+    
+    return power_data
 
 
 def create_optimized_tensor(power_data, model_type='cnn_2d'):
@@ -193,42 +188,47 @@ def create_optimized_tensor(power_data, model_type='cnn_2d'):
     else:
         raise ValueError(f"Type de modèle non supporté: {model_type}")
 
-def normalize_spectrograms(power_data : np.ndarray, scaler : RobustScaler) -> np.ndarray:
-    """Normalisation robuste des spectrogrammes"""
-    
+def normalize_spectrograms_fixed(power_data, scaler=None):
+    """Normalisation globale préservant les différences inter-classes"""
     original_shape = power_data.shape
-    power_flat = power_data.reshape(original_shape[0], -1)
-    power_normalized = scaler.fit_transform(power_flat)
-    power_normalized = power_normalized.reshape(original_shape)
-
-    return power_normalized
-
-
-def preprocess_data(raw_data: list[mne.io.Raw]) -> tuple:
-    """Version corrigée avec labels appropriés"""
-    DBG_PRINT("=== PRÉTRAITEMENT DES DONNÉES ===")
     
+    # Reshape pour normalisation globale
+    power_flat = power_data.reshape(-1, original_shape[-1])  # (samples*channels*freqs, time)
+    
+    if scaler is None:
+        scaler = RobustScaler()
+        power_normalized = scaler.fit_transform(power_flat)
+    else:
+        power_normalized = scaler.transform(power_flat)
+    
+    return power_normalized.reshape(original_shape), scaler
+
+
+def preprocess_data_fixed(raw_data):
+    """Version corrigée avec préservation des différences inter-classes"""
     all_spectrograms = []
     all_labels = []
-    scaler = RobustScaler()
     
+    # Calculer d'abord tous les spectrogrammes
     for raw in raw_data:
-        formatted = format_raw(raw)
-        epochs, _ = extract_epochs(formatted)
+        formatted = format_raw_fixed(raw)
+        epochs, _ = extract_epochs_fixed(formatted)
         
         if epochs is not None:
-            spectrogram = compute_multitaper_spectrogram(epochs)
-            scaled_spectrogram = normalize_spectrograms(spectrogram, scaler)
-            labels = epochs.events[:, 2]
-            labels -= np.min(labels)
-            all_spectrograms.append(scaled_spectrogram)
+            spectrogram = compute_multitaper_spectrogram_fixed(epochs)
+            labels = epochs.events[:, 2] - epochs.events[:, 2].min()
+            
+            all_spectrograms.append(spectrogram)
             all_labels.append(labels)
-
+    
+    # Concaténer avant normalisation
     x = np.concatenate(all_spectrograms, axis=0)
     y = np.concatenate(all_labels, axis=0)
-    x_formatted = create_optimized_tensor(x, model_type='cnn_2d')
-
-    return x_formatted, y, scaler
+    
+    # Normalisation GLOBALE
+    x_normalized, scaler = normalize_spectrograms_fixed(x)
+    
+    return x_normalized, y, scaler
 
 def save_preprocessed_data(data: np.ndarray, labels: np.ndarray, scaler: RobustScaler, filename: str) -> None:
     """
