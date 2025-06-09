@@ -43,7 +43,7 @@ def augment_eeg_data(x, y, augmentation_factor=2):
 
 # ------ Data validation ------
 
-
+#TODO: Possibilité de retourne le dictionnaire de stats...
 def diagnostic_data_quality(x, y,mt= 'cnn_2d', class_names=['Left Hand', 'Right Hand', 'Feet', 'Tongue'], verbose = False):
     """
     Diagnostic complet de la qualité des données
@@ -140,15 +140,19 @@ def diagnostic_data_quality(x, y,mt= 'cnn_2d', class_names=['Left Hand', 'Right 
         lda = LinearDiscriminantAnalysis()
         lda.fit(x_flat, y)
         lda_score = lda.score(x_flat, y)
-        print(f"Score LDA (séparabilité): {lda_score:.3f}")
+        PRINTV(f"Score LDA (séparabilité): {lda_score:.3f}")
         
         if lda_score > 0.3:
-            print("✅ Séparabilité acceptable")
+            PRINTV("✅ Séparabilité acceptable")
         else:
-            print("⚠️ Séparabilité faible - vérifier les features")
+            PRINTV("⚠️ Séparabilité faible - vérifier les features")
             
     except Exception as e:
-        print(f"⚠️ Impossible de calculer la séparabilité: {e}")
+        PRINTV(f"⚠️ Impossible de calculer la séparabilité: {e}")
 
+    # Acceptabilité :
     
-    return stats, fisher_ratio
+    print(stats)
+    decision = True if input("Accepter (T) ou Refuser (F)") == "T" else False
+    
+    return decision

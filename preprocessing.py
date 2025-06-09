@@ -271,10 +271,8 @@ def main(verbose: bool = True) -> None:
         return
     
     preprocessed_data, labels, scaler = preprocess_data(raw_data)
-    stats, fisher_ratio = validate_preprocessing_output(preprocessed_data, labels, scaler)
-    
-    
-    save_preprocessed_data(preprocessed_data, labels, scaler, 'preprocessed_data.npz')
+    if validate_preprocessing_output(preprocessed_data, labels, scaler) :
+        save_preprocessed_data(preprocessed_data, labels, scaler, 'preprocessed_data.npz')
 
 if __name__ == "__main__":
     main(verbose=True)
