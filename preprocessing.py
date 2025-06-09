@@ -38,7 +38,7 @@ def load_raw_data(dir_path: str) -> list[mne.io.Raw]:
         for file in files:
             file_path = join(dir_path, file)
             DBG_PRINT(f"Chargement du fichier: {file_path}")
-            raw = mne.io.read_raw_gdf(file_path, preload=True, verbose=False)
+            raw = mne.io.read_raw_gdf(file_path, eog=[22,23,24], preload = True)
             raw_data.append(raw)
         DBG_PRINT(f"{len(raw_data)} fichiers chargés avec succès.")
         return raw_data
@@ -59,16 +59,21 @@ def format_raw(raw: mne.io.Raw) -> mne.io.Raw:
     DBG_PRINT("=== FORMATAGE DES DONNÉES BRUTES ===")
     
     montage = mne.channels.make_standard_montage('standard_1020')
-    eog_channels = [22, 23, 24]
+    mapping = {
+    'EEG-0': 'FC3', 'EEG-1': 'FC1', 'EEG-2': 'FCz', 'EEG-3': 'FC2', 'EEG-4': 'FC4',
+    'EEG-5': 'C5', 'EEG-6': 'C1', 'EEG-7': 'C2', 'EEG-8': 'C6',
+    'EEG-9': 'CP3', 'EEG-10': 'CP1', 'EEG-11': 'CP2', 'EEG-12': 'CP4',
+    'EEG-13': 'P1', 'EEG-14': 'P2', 'EEG-15': 'POz', 'EEG-16': 'Oz',
+    'EEG-Fz': 'Fz', 'EEG-C3': 'C3', 'EEG-Cz': 'Cz', 'EEG-C4': 'C4', 'EEG-Pz': 'Pz'
+    }
 
+    raw.rename_channels(mapping)
     raw.set_montage(montage, verbose=False)
-    raw.set_eog_channels(eog_channels, verbose=False)
-    raw.set_eeg_reference('average', projection=True)
-
+    raw.set_eeg_reference('average')
     raw.filter(4.0, 40.0, fir_design='firwin', verbose=False)
     raw.interpolate_bads(reset_bads=True, verbose=False)
-    raw.drop_channels(eog_channels, verbose=False)
-    
+    raw.drop_channels(['EOG-left', 'EOG-central', 'EOG-right'])  
+
     return raw
 
 def extract_epochs(raw : mne.io.Raw) -> tuple:
@@ -91,15 +96,15 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
         return None, None
     
     event_mapping = {
-        motor_event_ids_effective[0]: 0,  # Left hand
-        motor_event_ids_effective[1]: 1,  # Right hand  
-        motor_event_ids_effective[2]: 2,  # Feet
-        motor_event_ids_effective[3]: 3   # Tongue
+        'left_hand': motor_event_ids_effective[0],
+        'right_hand': motor_event_ids_effective[1],
+        'feet': motor_event_ids_effective[2],
+        'tongue': motor_event_ids_effective[3]
     }
     
-    tmin = 1.0  # 0.5s après le cue
-    tmax = 3.0  # 2s d'imagerie motrice active
-    baseline = (-1, -0.5)  # Avant le cue pr normaliser les données
+    tmin = 2.0  # 0.5s après le cue
+    tmax = 4.5  # 2s d'imagerie motrice active
+    baseline = (2, 2.5)  # Avant le cue pr normaliser les données
 
     epochs = mne.Epochs(
         raw, events, event_mapping,
@@ -117,6 +122,7 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
     # Vérifier distribution des classes
     y = epochs.events[:, 2]
     unique_events, counts = np.unique(y, return_counts=True)
+    assert(len(unique_events) == 4)
     for event, count in zip(unique_events, counts):
         DBG_PRINT(f"  Classe {event}: {count} essais")
 
@@ -214,12 +220,13 @@ def preprocess_data(raw_data: list[mne.io.Raw]) -> tuple:
             spectrogram = compute_multitaper_spectrogram(epochs)
             scaled_spectrogram = normalize_spectrograms(spectrogram, scaler)
             labels = epochs.events[:, 2]
+            labels -= np.min(labels)
             all_spectrograms.append(scaled_spectrogram)
             all_labels.append(labels)
 
     x = np.concatenate(all_spectrograms, axis=0)
     y = np.concatenate(all_labels, axis=0)
-    x_formatted = create_optimized_tensor(x, model_type='cnn_3d')
+    x_formatted = create_optimized_tensor(x, model_type='cnn_2d')
 
     return x_formatted, y, scaler
 
@@ -250,7 +257,7 @@ def validate_preprocessing_output(x, y, scaler: RobustScaler) -> bool:
     print(f"Scaler utilisé: {scaler}")  
     # Vérifications critiques
     assert len(x) == len(y), "Mismatch entre données et labels"
-    assert x.ndim == 4, f"Dimensions incorrectes: {x.ndim} au lieu de 4"
+    # assert x.ndim == 4, f"Dimensions incorrectes: {x.ndim} au lieu de 4"
     assert np.all(np.isfinite(x)), "Données contiennent NaN/Inf"
     assert set(y) == {0, 1, 2, 3}, f"Labels incorrects: {set(y)}"
 

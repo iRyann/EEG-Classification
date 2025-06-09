@@ -44,7 +44,7 @@ def augment_eeg_data(x, y, augmentation_factor=2):
 # ------ Data validation ------
 
 #TODO: Possibilité de retourne le dictionnaire de stats...
-def diagnostic_data_quality(x, y,mt= 'cnn_2d', class_names=['Left Hand', 'Right Hand', 'Feet', 'Tongue'], verbose = False):
+def diagnostic_data_quality(x, y, mt= 'cnn_2d', class_names=['Left Hand', 'Right Hand', 'Feet', 'Tongue'], verbose = False):
     """
     Diagnostic complet de la qualité des données
     """
