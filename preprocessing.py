@@ -103,7 +103,7 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
     }
     
     tmin = -0.5   # Avant le cue pour baseline
-    tmax = 4.0    # Fin de l'imagerie motrice
+    tmax = 2.0   # Fin de l'imagerie motrice
     baseline = (-0.5, 0)  # Baseline avant le cue
 
     epochs = mne.Epochs(
@@ -128,24 +128,27 @@ def extract_epochs(raw : mne.io.Raw) -> tuple:
 
     return epochs, event_mapping
 
-def compute_multitaper_spectrogram_fixed(epochs):
-    """Version corrigée avec bandes de fréquences optimales"""
-    # Bandes critiques pour imagerie motrice
-    freqs = np.logspace(np.log10(8), np.log10(30), 15)  # Distribution log
-    
+def compute_multitaper_spectrogram(epochs):
+    """Version avec normalisation par ligne de base"""
+    freqs = np.logspace(np.log10(8), np.log10(30), 15)
     power = tfr_multitaper(
         epochs, freqs=freqs, n_cycles=freqs/2,
         use_fft=True, return_itc=False,
-        decim=1,  # Pas de décimation supplémentaire
-        n_jobs=-1, 
+        decim=1, n_jobs=-1,
         average=False, verbose=False
     )
     
-    # Normalisation log mais avec offset plus approprié
-    power_data = 10 * np.log10(power.data + np.finfo(float).eps)
+    # Conversion en dB
+    power_db = 10 * np.log10(power.data + np.finfo(float).eps)
     
-    return power_data
-
+    # Normalisation par ligne de base (par exemple, première seconde)
+    baseline_period = slice(0, int(power.times[power.times <= 1.0].shape[0]))
+    baseline_mean = np.mean(power_db[:, :, :, baseline_period], axis=-1, keepdims=True)
+    
+    # Soustraction de la ligne de base
+    power_normalized = power_db - baseline_mean
+    
+    return power_normalized
 
 def create_optimized_tensor(power_data, model_type='cnn_2d'):
     """
@@ -188,36 +191,19 @@ def create_optimized_tensor(power_data, model_type='cnn_2d'):
     else:
         raise ValueError(f"Type de modèle non supporté: {model_type}")
 
-def normalize_spectrograms_fixed(power_data, scaler=None):
-    """Normalisation globale préservant les différences inter-classes"""
-    original_shape = power_data.shape
-    
-    # Reshape pour normalisation globale
-    power_flat = power_data.reshape(-1, original_shape[-1])  # (samples*channels*freqs, time)
-    
-    if scaler is None:
-        scaler = RobustScaler()
-        power_normalized = scaler.fit_transform(power_flat)
-    else:
-        power_normalized = scaler.transform(power_flat)
-    
-    return power_normalized.reshape(original_shape), scaler
-
-
-def preprocess_data_fixed(raw_data):
+def preprocess_data(raw_data):
     """Version corrigée avec préservation des différences inter-classes"""
     all_spectrograms = []
     all_labels = []
     
     # Calculer d'abord tous les spectrogrammes
     for raw in raw_data:
-        formatted = format_raw_fixed(raw)
-        epochs, _ = extract_epochs_fixed(formatted)
+        formatted = format_raw(raw)
+        epochs, _ = extract_epochs(formatted)
         
         if epochs is not None:
-            spectrogram = compute_multitaper_spectrogram_fixed(epochs)
+            spectrogram = compute_multitaper_spectrogram(epochs)
             labels = epochs.events[:, 2] - epochs.events[:, 2].min()
-            
             all_spectrograms.append(spectrogram)
             all_labels.append(labels)
     
@@ -225,18 +211,14 @@ def preprocess_data_fixed(raw_data):
     x = np.concatenate(all_spectrograms, axis=0)
     y = np.concatenate(all_labels, axis=0)
     
-    # Normalisation GLOBALE
-    x_normalized, scaler = normalize_spectrograms_fixed(x)
-    
-    return x_normalized, y, scaler
+    return x, y
 
-def save_preprocessed_data(data: np.ndarray, labels: np.ndarray, scaler: RobustScaler, filename: str) -> None:
+def save_preprocessed_data(data: np.ndarray, labels: np.ndarray, filename: str) -> None:
     """
     Enregistrer les données prétraitées dans un fichier .npy.
     Args:
         data (np.ndarray): Tenseur 3D contenant les données prétraitées.
         labels (np.ndarray): Labels associés aux données.
-        scaler (RobustScaler): Scaler utilisé pour normaliser les données.
         filename (str): Nom du fichier pour enregistrer les données.
     """
     if not os.path.exists(DATA_PREPROCESSED_DIR):
@@ -244,20 +226,17 @@ def save_preprocessed_data(data: np.ndarray, labels: np.ndarray, scaler: RobustS
 
     file_path = join(DATA_PREPROCESSED_DIR, filename)
     np.savez(file_path, data=data, labels=labels)
-    joblib.dump(scaler, join(DATA_PREPROCESSED_DIR, 'scaler.save'))
 
     DBG_PRINT(f"Données prétraitées enregistrées dans {file_path}")
 
-def validate_preprocessing_output(x, y, scaler: RobustScaler) -> bool:
+def validate_preprocessing_output(x, y) -> bool:
     """Validation des données prétraitées"""
     print(f"Shape des données: {x.shape}")
     print(f"Shape des labels: {y.shape}")
     print(f"Range des données: [{x.min():.3f}, {x.max():.3f}]")
     print(f"Labels uniques: {np.unique(y, return_counts=True)}")
-    print(f"Scaler utilisé: {scaler}")  
     # Vérifications critiques
     assert len(x) == len(y), "Mismatch entre données et labels"
-    # assert x.ndim == 4, f"Dimensions incorrectes: {x.ndim} au lieu de 4"
     assert np.all(np.isfinite(x)), "Données contiennent NaN/Inf"
     assert set(y) == {0, 1, 2, 3}, f"Labels incorrects: {set(y)}"
 
@@ -277,9 +256,9 @@ def main(verbose: bool = True) -> None:
         DBG_PRINT("Aucune donnée brute chargée. Fin du programme.")
         return
     
-    preprocessed_data, labels, scaler = preprocess_data(raw_data)
-    if validate_preprocessing_output(preprocessed_data, labels, scaler) :
-        save_preprocessed_data(preprocessed_data, labels, scaler, 'preprocessed_data.npz')
+    preprocessed_data, labels = preprocess_data(raw_data)
+    if validate_preprocessing_output(preprocessed_data, labels) :
+        save_preprocessed_data(preprocessed_data, labels, 'preprocessed_data.npz')
 
 if __name__ == "__main__":
     main(verbose=True)

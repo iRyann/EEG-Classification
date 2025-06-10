@@ -43,7 +43,7 @@ def augment_eeg_data(x, y, augmentation_factor=2):
 
 # ------ Data validation ------
 
-def diagnostic_data_quality_fixed(x, y, verbose=True):
+def diagnostic_data_quality(x, y, verbose=True):
     """Version optimisée sans blocage LDA"""
     
     # Réduction de dimensionnalité avant LDA
