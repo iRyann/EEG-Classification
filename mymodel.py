@@ -288,7 +288,50 @@ class BCIKerasModel:
         self.model = keras.models.load_model(filepath)
         print(f"📂 Modèle Keras chargé: {filepath}")
 
-def cross_validate_keras(X, y, model_type='deep_csp', n_splits=5):
+def load_and_prepare_raw_eeg_data():
+    """
+    Charger et préparer les données EEG brutes pour CNN/LSTM
+    Alternative aux features CSP pour avoir des données temporelles
+    """
+    print("📊 CHARGEMENT DONNÉES EEG TEMPORELLES...")
+    
+    try:
+        # Essayer de charger les données preprocessées avec information temporelle
+        data_path = 'data/preprocessed/eeg_temporal_data.npz'
+        if os.path.exists(data_path):
+            data = np.load(data_path)
+            return data['data'], data['labels']
+        else:
+            print("⚠️  Données temporelles non trouvées. Utilisation des features CSP adaptées.")
+            return None, None
+    except:
+        return None, None
+
+def create_temporal_data_from_csp(X_csp, y, time_steps=10):
+    """
+    Créer des données pseudo-temporelles à partir des features CSP
+    Pour tester CNN1D et LSTM même sans données temporelles originales
+    """
+    print(f"🔄 Création de données temporelles à partir de CSP...")
+    
+    n_samples, n_features = X_csp.shape
+    
+    # Créer une séquence temporelle en dupliquant et en ajoutant du bruit
+    X_temporal = np.zeros((n_samples, time_steps, n_features))
+    
+    for i in range(n_samples):
+        for t in range(time_steps):
+            # Base: les features CSP originales
+            base_features = X_csp[i]
+            
+            # Ajouter variation temporelle simulée
+            noise_factor = 0.1 * np.sin(2 * np.pi * t / time_steps)
+            temporal_variation = base_features * (1 + noise_factor * np.random.normal(0, 0.1, n_features))
+            
+            X_temporal[i, t, :] = temporal_variation
+    
+    print(f"✅ Données temporelles créées: {X_temporal.shape}")
+    return X_temporal, y
     """
     Validation croisée pour modèle Keras
     """
@@ -325,7 +368,39 @@ def cross_validate_keras(X, y, model_type='deep_csp', n_splits=5):
     
     return cv_scores
 
-def compare_keras_models(X, y):
+def prepare_data_for_model(X, y, model_type):
+    """
+    Adapter les données selon le type de modèle
+    """
+    if model_type == 'deep_csp' or model_type == 'attention':
+        # Données CSP directes (shape: n_samples, n_features)
+        return X, y
+    
+    elif model_type == 'cnn_1d' or model_type == 'lstm':
+        # Pour CNN1D et LSTM, on a besoin d'une dimension temporelle
+        # Simulation: on reshape les features CSP en séquence temporelle
+        if len(X.shape) == 2:
+            # Transformer (n_samples, n_features) -> (n_samples, time_steps, features)
+            n_samples, n_features = X.shape
+            time_steps = min(n_features, 6)  # Maximum 6 time steps
+            features_per_step = n_features // time_steps
+            
+            if features_per_step == 0:
+                features_per_step = 1
+                time_steps = n_features
+            
+            # Reshape et padding si nécessaire
+            X_reshaped = X[:, :time_steps * features_per_step]
+            X_reshaped = X_reshaped.reshape(n_samples, time_steps, features_per_step)
+            
+            print(f"📊 Données adaptées pour {model_type}: {X.shape} -> {X_reshaped.shape}")
+            return X_reshaped, y
+        else:
+            return X, y
+    
+    return X, y
+
+def compare_keras_models(X, y, test_all_models=True):
     """
     Comparaison de différents modèles Keras
     """
@@ -337,7 +412,10 @@ def compare_keras_models(X, y):
         X, y, test_size=0.2, random_state=42, stratify=y
     )
     
-    models_to_test = ['deep_csp']  # Commencer par le plus simple
+    if test_all_models:
+        models_to_test = ['deep_csp', 'cnn_1d', 'lstm', 'attention']
+    else:
+        models_to_test = ['deep_csp']
     
     results = {}
     
@@ -345,35 +423,72 @@ def compare_keras_models(X, y):
         print(f"\n🤖 Test {model_type.upper()}:")
         print("-" * 30)
         
-        # Créer et entraîner le modèle
-        model = BCIKerasModel(
-            input_shape=(X_train.shape[1],),
-            num_classes=len(np.unique(y)),
-            model_type=model_type
-        )
-        
-        # Entraînement
-        history = model.train(X_train, y_train, epochs=100, verbose=1)
-        
-        # Évaluation
-        test_accuracy, _, _ = model.evaluate(X_test, y_test)
-        
-        # Stocker les résultats
-        results[model_type] = {
-            'model': model,
-            'test_accuracy': test_accuracy,
-            'history': history
-        }
-        
-        # Graphique
-        model.plot_training_history()
+        try:
+            # Adapter les données pour ce type de modèle
+            X_train_adapted, y_train_adapted = prepare_data_for_model(X_train, y_train, model_type)
+            X_test_adapted, y_test_adapted = prepare_data_for_model(X_test, y_test, model_type)
+            
+            # Déterminer la shape d'entrée
+            if len(X_train_adapted.shape) == 2:
+                input_shape = (X_train_adapted.shape[1],)
+            else:
+                input_shape = X_train_adapted.shape[1:]
+            
+            print(f"📊 Input shape pour {model_type}: {input_shape}")
+            
+            # Créer et entraîner le modèle
+            model = BCIKerasModel(
+                input_shape=input_shape,
+                num_classes=len(np.unique(y)),
+                model_type=model_type
+            )
+            
+            # Entraînement avec gestion des erreurs
+            history = model.train(
+                X_train_adapted, y_train_adapted, 
+                epochs=80,  # Réduire pour les tests
+                batch_size=16,  # Batch plus petit pour stabilité
+                verbose=1
+            )
+            
+            # Évaluation
+            test_accuracy, _, _ = model.evaluate(X_test_adapted, y_test_adapted)
+            
+            # Stocker les résultats
+            results[model_type] = {
+                'model': model,
+                'test_accuracy': test_accuracy,
+                'history': history,
+                'input_shape': input_shape
+            }
+            
+            print(f"✅ {model_type} terminé - Accuracy: {test_accuracy:.3f}")
+            
+        except Exception as e:
+            print(f"❌ Erreur avec {model_type}: {str(e)}")
+            results[model_type] = {
+                'error': str(e),
+                'test_accuracy': 0.0
+            }
+    
+    # Résumé des résultats
+    print("\n📋 RÉSUMÉ DES PERFORMANCES:")
+    print("=" * 50)
+    for model_type, result in results.items():
+        if 'error' in result:
+            print(f"{model_type.upper():12s} | ❌ ERREUR: {result['error'][:50]}...")
+        else:
+            print(f"{model_type.upper():12s} | ✅ Accuracy: {result['test_accuracy']:.3f}")
     
     return results
 
 # ============= FONCTION PRINCIPALE =============
 
-def main():
-    """Pipeline complet avec Keras"""
+def main(test_all_models=True):
+    """Pipeline complet avec Keras - Test de tous les modèles"""
+    
+    print("🚀 PIPELINE KERAS BCI - TEST COMPLET")
+    print("=" * 50)
     
     # Charger les données prétraitées
     data_path = 'data/preprocessed/preprocessed_data_csp_simple.npz'
@@ -382,28 +497,112 @@ def main():
         data = np.load(data_path)
         X = data['data']
         y = data['labels']
-        print(f"✅ Données chargées: {X.shape}")
+        print(f"✅ Données CSP chargées: {X.shape}")
     except FileNotFoundError:
         print(f"❌ Fichier non trouvé: {data_path}")
         print("🔧 Exécutez d'abord le preprocessing!")
         return
     
+    # Option: créer des données temporelles pour CNN/LSTM
+    if test_all_models:
+        print("\n📊 Création de données temporelles pour CNN/LSTM...")
+        X_temporal, y_temporal = create_temporal_data_from_csp(X, y)
+    
     # Comparaison des modèles Keras
-    results = compare_keras_models(X, y)
+    results = compare_keras_models(X, y, test_all_models=test_all_models)
+    
+    # Afficher les graphiques pour les modèles qui ont réussi
+    print("\n📊 GÉNÉRATION DES GRAPHIQUES...")
+    for model_type, result in results.items():
+        if 'model' in result and 'error' not in result:
+            print(f"📈 Graphique pour {model_type}...")
+            try:
+                result['model'].plot_training_history()
+            except Exception as e:
+                print(f"⚠️  Erreur graphique {model_type}: {e}")
     
     # Sauvegarder le meilleur modèle
-    best_model_type = max(results.keys(), 
-                         key=lambda k: results[k]['test_accuracy'])
-    best_model = results[best_model_type]['model']
+    valid_results = {k: v for k, v in results.items() if 'error' not in v}
     
-    # Sauvegarder
-    os.makedirs('data/preprocessed', exist_ok=True)
-    best_model.save_model('data/preprocessed/bci_keras_model.h5')
-    
-    print(f"\n🏆 Meilleur modèle: {best_model_type}")
-    print(f"📊 Performance: {results[best_model_type]['test_accuracy']:.3f}")
+    if valid_results:
+        best_model_type = max(valid_results.keys(), 
+                             key=lambda k: valid_results[k]['test_accuracy'])
+        best_model = valid_results[best_model_type]['model']
+        
+        # Sauvegarder
+        os.makedirs('data/preprocessed', exist_ok=True)
+        model_path = f'data/preprocessed/bci_keras_{best_model_type}.h5'
+        best_model.save_model(model_path)
+        
+        print(f"\n🏆 MEILLEUR MODÈLE: {best_model_type.upper()}")
+        print(f"📊 Performance: {valid_results[best_model_type]['test_accuracy']:.3f}")
+        print(f"💾 Sauvé: {model_path}")
+    else:
+        print("❌ Aucun modèle n'a réussi l'entraînement")
     
     return results
 
+def quick_test_single_model(model_type='deep_csp'):
+    """Test rapide d'un seul modèle"""
+    print(f"⚡ TEST RAPIDE: {model_type.upper()}")
+    
+    # Charger données
+    try:
+        data = np.load('data/preprocessed/preprocessed_data_csp_simple.npz')
+        X, y = data['data'], data['labels']
+    except FileNotFoundError:
+        print("❌ Données non trouvées")
+        return
+    
+    # Split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    
+    # Adapter données
+    X_train_adapted, _ = prepare_data_for_model(X_train, y_train, model_type)
+    X_test_adapted, _ = prepare_data_for_model(X_test, y_test, model_type)
+    
+    # Input shape
+    if len(X_train_adapted.shape) == 2:
+        input_shape = (X_train_adapted.shape[1],)
+    else:
+        input_shape = X_train_adapted.shape[1:]
+    
+    # Modèle
+    model = BCIKerasModel(input_shape=input_shape, model_type=model_type)
+    
+    # Entraînement rapide
+    model.train(X_train_adapted, y_train, epochs=30, verbose=1)
+    
+    # Test
+    accuracy, _, _ = model.evaluate(X_test_adapted, y_test)
+    print(f"🎯 Résultat: {accuracy:.3f}")
+    
+    return model
+
 if __name__ == "__main__":
-    results = main()
+    print("🚀 MENU DE TEST KERAS BCI")
+    print("=" * 30)
+    print("1️⃣  Test complet (tous les modèles)")
+    print("2️⃣  Test rapide Deep CSP")
+    print("3️⃣  Test rapide CNN 1D")
+    print("4️⃣  Test rapide LSTM")
+    print("5️⃣  Test rapide Attention")
+    
+    choice = input("\nChoisissez une option (1-5, ou Entrée pour test complet): ").strip()
+    
+    if choice == '1' or choice == '':
+        print("\n🔄 LANCEMENT TEST COMPLET...")
+        results = main(test_all_models=True)
+    elif choice == '2':
+        model = quick_test_single_model('deep_csp')
+    elif choice == '3':
+        model = quick_test_single_model('cnn_1d')
+    elif choice == '4':
+        model = quick_test_single_model('lstm')
+    elif choice == '5':
+        model = quick_test_single_model('attention')
+    else:
+        print("❌ Option invalide")
+        results = main(test_all_models=True)
